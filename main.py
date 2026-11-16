@@ -13,7 +13,9 @@ from trilium_py.client import ETAPI
 
 DEFAULT_IGNORED_FOLDERS = ("assets", "logseq", ".git")
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
-TAG_RE = re.compile(r"(?<![\w#])#([^\s\[\]{}()<>,;.!?]+)")
+TAG_RE = re.compile(r"(?<![\w#])#(?!\+)([^\s\[\]{}()<>,;.!?]+)")
+FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+INLINE_CODE_RE = re.compile(r"(`+)[^`\n]*?\1")
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,11 +74,30 @@ def markdown_files(graph: Path, ignored_folders: tuple[str, ...]) -> list[Path]:
     return sorted(files)
 
 
+def without_code(text: str) -> str:
+    """Remove fenced and inline code so examples are not interpreted as links or tags."""
+    kept_lines: list[str] = []
+    fence_char: str | None = None
+    fence_length = 0
+    for line in text.splitlines():
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if fence_char is None:
+                fence_char, fence_length = marker[0], len(marker)
+            elif marker[0] == fence_char and len(marker) >= fence_length:
+                fence_char, fence_length = None, 0
+            continue
+        if fence_char is None:
+            kept_lines.append(line)
+    return INLINE_CODE_RE.sub(" ", "\n".join(kept_lines))
+
+
 def link_targets(files: list[Path]) -> set[str]:
-    """Extract Logseq page links and tags from Markdown files."""
+    """Extract Logseq page links and tags from Markdown outside code blocks."""
     targets: set[str] = set()
     for path in files:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = without_code(path.read_text(encoding="utf-8", errors="replace"))
         for match in WIKILINK_RE.finditer(text):
             # Logseq supports [[page|display text]]; only the page name is a target.
             target = match.group(1).split("|", 1)[0].strip()
@@ -84,6 +105,12 @@ def link_targets(files: list[Path]) -> set[str]:
                 targets.add(target)
         targets.update(match.group(1).strip() for match in TAG_RE.finditer(text) if match.group(1).strip())
     return targets
+
+
+def normalize_target(target: str) -> str:
+    """Normalize a Logseq target, including its `___` encoding for page-title slashes."""
+    decoded = target.replace("\\", "/").replace("___", "/")
+    return "/".join(part.strip().casefold() for part in decoded.split("/") if part.strip())
 
 
 def page_keys(files: list[Path], graph: Path) -> set[str]:
@@ -99,15 +126,28 @@ def page_keys(files: list[Path], graph: Path) -> set[str]:
     return keys
 
 
-def normalize_target(target: str) -> str:
-    """Normalize a Logseq target for matching against Markdown paths."""
-    return "/".join(part.strip().casefold() for part in target.replace("\\", "/").split("/") if part.strip())
+def local_file_targets(targets: set[str], graph: Path) -> dict[str, Path]:
+    """Return wikilink targets that point to files inside the graph, not pages."""
+    files: dict[str, Path] = {}
+    graph = graph.resolve()
+    for target in targets:
+        candidate = (graph / target.replace("\\", "/")).resolve()
+        try:
+            candidate.relative_to(graph)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            files[target] = candidate
+    return files
 
 
 def missing_link_targets(targets: set[str], files: list[Path], graph: Path) -> list[str]:
     known_pages = page_keys(files, graph)
+    local_files = local_file_targets(targets, graph)
     missing: dict[str, str] = {}
     for target in targets:
+        if target in local_files:
+            continue
         normalized = normalize_target(target)
         if normalized and normalized not in known_pages:
             missing.setdefault(normalized, target.replace("\\", "/").strip("/"))
@@ -155,6 +195,43 @@ def create_link_notes(client: ETAPI, parent_note_id: str, targets: list[str]) ->
     return created
 
 
+def upload_local_file_targets(
+    client: ETAPI, parent_note_id: str, targets: set[str], graph: Path
+) -> int:
+    """Import local files referenced by wikilinks (for example Logseq whiteboards)."""
+    created = 0
+    path_note_ids: dict[tuple[str, ...], str] = {(): parent_note_id}
+    for target, file_path in sorted(local_file_targets(targets, graph).items()):
+        relative = file_path.relative_to(graph.resolve())
+        parent_parts: tuple[str, ...] = ()
+        for part in relative.parts[:-1]:
+            current_parts = parent_parts + (part,)
+            if current_parts not in path_note_ids:
+                parent_id = path_note_ids[parent_parts]
+                note_id = find_child_note(client, parent_id, part)
+                if note_id is None:
+                    response = client.create_note(
+                        parentNoteId=parent_id,
+                        title=part,
+                        type="text",
+                        content="",
+                    )
+                    note_id = response["note"]["noteId"]
+                    created += 1
+                path_note_ids[current_parts] = note_id
+            parent_parts = current_parts
+        parent_id = path_note_ids[parent_parts]
+        title = file_path.name
+        if find_child_note(client, parent_id, title) is None:
+            client.create_file_note(
+                parentNoteId=parent_id,
+                title=title,
+                file_path=str(file_path),
+            )
+            created += 1
+    return created
+
+
 def main() -> int:
     args = parse_args()
     graph = args.graph.expanduser().resolve()
@@ -166,15 +243,19 @@ def main() -> int:
     files = markdown_files(graph, ignored_folders)
     targets = link_targets(files)
     missing_targets = missing_link_targets(targets, files, graph)
+    file_targets = local_file_targets(targets, graph)
     print(f"Logseq-Graph: {graph}")
     print(f"Markdown-Dateien: {len(files)}")
     print(f"Erkannte Links und Tags: {len(targets)}")
+    print(f"Lokal verlinkte Dateien: {len(file_targets)}")
     print(f"Fehlende verlinkte Notizen: {len(missing_targets)}")
     print(f"Ignorierte Ordnernamen: {', '.join(ignored_folders) or '(keine)'}")
 
     if args.dry_run:
         for path in files:
             print(path.relative_to(graph))
+        for target in sorted(file_targets, key=str.casefold):
+            print(f"[Datei importieren] {target}")
         for target in missing_targets:
             print(f"[Notiz erstellen] {target}")
         return 0
@@ -204,11 +285,12 @@ def main() -> int:
             ignoreFolder=list(ignored_folders),
         )
         created = create_link_notes(client, args.parent_note_id, missing_targets)
+        created += upload_local_file_targets(client, args.parent_note_id, targets, graph)
     except Exception as exc:  # noqa: BLE001 - display client/API errors to CLI users
         print(f"Import fehlgeschlagen: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Import abgeschlossen. Zusätzliche verlinkte Notizen erstellt: {created}.")
+    print(f"Import abgeschlossen. Zusätzliche Notizen und Dateien erstellt: {created}.")
     return 0
 
 
