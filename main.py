@@ -174,7 +174,7 @@ def create_note_and_get_id(client: ETAPI, parent_note_id: str, title: str) -> st
         parentNoteId=parent_note_id,
         title=title,
         type="text",
-        content="",
+        content="<p></p>",
     )
     if "note" not in response or "noteId" not in response["note"]:
         raise RuntimeError(
@@ -288,7 +288,10 @@ def main() -> int:
             mdFolder=str(graph),
             ignoreFolder=list(ignored_folders),
         )
-        created = create_link_notes(client, args.parent_note_id, missing_targets)
+        pages_note_id = find_child_note(client, args.parent_note_id, "Pages")
+        if pages_note_id is None:
+            pages_note_id = create_note_and_get_id(client, args.parent_note_id, "Pages")
+        created = create_link_notes(client, pages_note_id, missing_targets)
         created += upload_local_file_targets(client, args.parent_note_id, targets, graph)
     except Exception as exc:  # noqa: BLE001 - display client/API errors to CLI users
         print(f"Import fehlgeschlagen: {exc}", file=sys.stderr)
