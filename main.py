@@ -168,6 +168,22 @@ def find_child_note(client: ETAPI, parent_note_id: str, title: str) -> str | Non
     return None
 
 
+def create_note_and_get_id(client: ETAPI, parent_note_id: str, title: str) -> str:
+    """Create a note and return its ID, with a useful error if ETAPI rejects it."""
+    response = client.create_note(
+        parentNoteId=parent_note_id,
+        title=title,
+        type="text",
+        content="",
+    )
+    if "note" not in response or "noteId" not in response["note"]:
+        raise RuntimeError(
+            f"Trilium create_note failed for title {title!r} under parent "
+            f"{parent_note_id!r}. API response: {response!r}"
+        )
+    return response["note"]["noteId"]
+
+
 def create_link_notes(client: ETAPI, parent_note_id: str, targets: list[str]) -> int:
     """Create missing linked notes, using slash-separated targets as note hierarchies."""
     created = 0
@@ -182,13 +198,7 @@ def create_link_notes(client: ETAPI, parent_note_id: str, targets: list[str]) ->
                 parent_id = path_note_ids[parent_parts]
                 note_id = find_child_note(client, parent_id, part)
                 if note_id is None:
-                    response = client.create_note(
-                        parentNoteId=parent_id,
-                        title=part,
-                        type="text",
-                        content="",
-                    )
-                    note_id = response["note"]["noteId"]
+                    note_id = create_note_and_get_id(client, parent_id, part)
                     created += 1
                 path_note_ids[current_parts] = note_id
             parent_parts = current_parts
@@ -210,13 +220,7 @@ def upload_local_file_targets(
                 parent_id = path_note_ids[parent_parts]
                 note_id = find_child_note(client, parent_id, part)
                 if note_id is None:
-                    response = client.create_note(
-                        parentNoteId=parent_id,
-                        title=part,
-                        type="text",
-                        content="",
-                    )
-                    note_id = response["note"]["noteId"]
+                    note_id = create_note_and_get_id(client, parent_id, part)
                     created += 1
                 path_note_ids[current_parts] = note_id
             parent_parts = current_parts
