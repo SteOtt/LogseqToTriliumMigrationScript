@@ -1,6 +1,6 @@
 # Logseq → TriliumNext
 
-Ein kleines Python-Gerüst, um Markdown-Dateien eines Logseq-Graphen mit [`trilium-py`](https://github.com/Nriver/trilium-py) in TriliumNext zu importieren. Der Import verwendet `ETAPI.upload_md_folder`; die Bibliothek erhält damit die Ordnerstruktur und unterstützt Markdown-Dateien mit referenzierten Bildern.
+Ein kleines Python-Gerüst, um Markdown-Dateien eines Logseq-Graphen mit [`trilium-py`](https://github.com/Nriver/trilium-py) in TriliumNext zu importieren. Zusätzlich werden fehlende Ziele von Logseq-Seitenlinks (`[[Seite]]`) und Tags (`#Tag`) als Trilium-Notizen angelegt. Schrägstriche in einem Link erzeugen eine entsprechende Notiz-Hierarchie, zum Beispiel `[[Projekt/Planung]]` → `Projekt` → `Planung`.
 
 ## Voraussetzungen
 
@@ -25,7 +25,7 @@ export TRILIUM_ETAPI_TOKEN="<dein-etapi-token>"
 
 ## Verwendung
 
-Zuerst optional prüfen, welche Markdown-Dateien erkannt werden, ohne eine Verbindung zu Trilium aufzubauen:
+Zuerst optional prüfen, welche Markdown-Dateien erkannt und welche verlinkten Notizen ergänzt werden, ohne eine Verbindung zu Trilium aufzubauen:
 
 ```bash
 python main.py /pfad/zum/logseq-graph --dry-run
@@ -50,11 +50,11 @@ python main.py /pfad/zum/logseq-graph \\
   --ignore-folder assets --ignore-folder logseq --ignore-folder .git --ignore-folder private
 ```
 
-Das Skript zählt und listet bei `--dry-run` ausschließlich Markdown-Dateien; der eigentliche Upload und die Verarbeitung von Bild-Links erfolgen durch `trilium-py`. Vor einem produktiven Lauf empfiehlt sich ein Trilium-Backup. Wiederholte Importe können Duplikate erzeugen; dieses Gerüst führt noch keine Abgleich-/Aktualisierungslogik durch.
+Das Skript zählt und listet bei `--dry-run` Markdown-Dateien sowie Links, für die keine Markdown-Seite im Graphen existiert. Beim Import werden zunächst Markdown-Dateien hochgeladen; anschließend werden fehlende Seitenziele und Tags erstellt. Vor einem produktiven Lauf empfiehlt sich ein Backup der Trilium-Datenbank.
 
 ## Nächste Ausbauschritte
 
-- Logseq-spezifische `[[Seitenlinks]]` und Block-Referenzen umwandeln
+- Block-Referenzen umwandeln
 - Tags, Properties und Journaldaten gezielt übernehmen
 - Import-Mapping für idempotente Wiederholung speichern
 - Fortschrittsanzeige und detailliertes Importprotokoll ergänzen
