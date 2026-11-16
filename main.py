@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from trilium_py.client import ETAPI
@@ -72,6 +74,24 @@ def markdown_files(graph: Path, ignored_folders: tuple[str, ...]) -> list[Path]:
             if name.lower().endswith(".md")
         )
     return sorted(files)
+
+
+def stage_markdown_files(files: list[Path], graph: Path, destination: Path) -> None:
+    """Copy Markdown files into an import tree, decoding Logseq's `___` page hierarchy."""
+    destinations: set[Path] = set()
+    for source in files:
+        relative = source.relative_to(graph)
+        # Logseq encodes slashes in page titles as three underscores. Turn those
+        # into directories so Trilium imports the page as a note hierarchy.
+        title_parts = tuple(part for part in relative.stem.replace("___", "/").split("/") if part)
+        if not title_parts:
+            title_parts = (relative.stem,)
+        staged_path = destination / relative.parent / Path(*title_parts).with_suffix(relative.suffix)
+        if staged_path in destinations:
+            raise ValueError(f"Multiple Markdown files map to the same import path: {staged_path}")
+        destinations.add(staged_path)
+        staged_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, staged_path)
 
 
 def without_code(text: str) -> str:
@@ -257,7 +277,9 @@ def main() -> int:
 
     if args.dry_run:
         for path in files:
-            print(path.relative_to(graph))
+            relative = path.relative_to(graph)
+            decoded_stem = "/".join(part for part in relative.stem.replace("___", "/").split("/") if part)
+            print(relative.parent / f"{decoded_stem or relative.stem}{relative.suffix}")
         for target in sorted(file_targets, key=str.casefold):
             print(f"[Datei importieren] {target}")
         for target in missing_targets:
@@ -283,11 +305,14 @@ def main() -> int:
 
     try:
         client = ETAPI(args.server_url.rstrip("/"), token)
-        client.upload_md_folder(
-            parentNoteId=args.parent_note_id,
-            mdFolder=str(graph),
-            ignoreFolder=list(ignored_folders),
-        )
+        with tempfile.TemporaryDirectory(prefix="logseq-trilium-") as staging_dir:
+            staged_graph = Path(staging_dir)
+            stage_markdown_files(files, graph, staged_graph)
+            client.upload_md_folder(
+                parentNoteId=args.parent_note_id,
+                mdFolder=str(staged_graph),
+                ignoreFolder=list(ignored_folders),
+            )
         pages_note_id = find_child_note(client, args.parent_note_id, "pages")
         if pages_note_id is None:
             pages_note_id = create_note_and_get_id(client, args.parent_note_id, "pages")
