@@ -18,6 +18,7 @@ WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 TAG_RE = re.compile(r"(?<![\w#])#(?!\+)([^\s\[\]{}()<>,;.!?]+)")
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 INLINE_CODE_RE = re.compile(r"(`+)[^`\n]*?\1")
+ATX_HEADING_RE = re.compile(r"^( {0,3})(#{1,6})(?=[ \t]|$)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,6 +77,33 @@ def markdown_files(graph: Path, ignored_folders: tuple[str, ...]) -> list[Path]:
     return sorted(files)
 
 
+def shift_markdown_headings(text: str) -> str:
+    """Shift Markdown headings down one level because Trilium does not support H1."""
+    shifted_lines: list[str] = []
+    fence_char: str | None = None
+    fence_length = 0
+
+    for line in text.splitlines(keepends=True):
+        fence = FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if fence_char is None:
+                fence_char, fence_length = marker[0], len(marker)
+            elif marker[0] == fence_char and len(marker) >= fence_length:
+                fence_char, fence_length = None, 0
+            shifted_lines.append(line)
+            continue
+
+        if fence_char is None:
+            heading = ATX_HEADING_RE.match(line)
+            if heading:
+                level = min(len(heading.group(2)) + 1, 6)
+                line = f"{heading.group(1)}{'#' * level}{line[heading.end():]}"
+        shifted_lines.append(line)
+
+    return "".join(shifted_lines)
+
+
 def stage_markdown_files(files: list[Path], graph: Path, destination: Path) -> None:
     """Copy Markdown files into an import tree, decoding Logseq's `___` page hierarchy."""
     destinations: set[Path] = set()
@@ -92,6 +120,8 @@ def stage_markdown_files(files: list[Path], graph: Path, destination: Path) -> N
         destinations.add(staged_path)
         staged_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, staged_path)
+        content = staged_path.read_text(encoding="utf-8")
+        staged_path.write_text(shift_markdown_headings(content), encoding="utf-8")
 
 
 def without_code(text: str) -> str:
