@@ -19,6 +19,7 @@ TAG_RE = re.compile(r"(?<![\w#])#(?!\+)([^\s\[\]{}()<>,;.!?]+)")
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 INLINE_CODE_RE = re.compile(r"(`+)[^`\n]*?\1")
 ATX_HEADING_RE = re.compile(r"^( {0,3})(#{1,6})(?=[ \t]|$)")
+SETEXT_HEADING_RE = re.compile(r"^(?P<title>.+?)\n(?P<underline>=+|-+)[ \t]*$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,13 +78,21 @@ def markdown_files(graph: Path, ignored_folders: tuple[str, ...]) -> list[Path]:
     return sorted(files)
 
 
+def shift_heading_level(level: int) -> int:
+    """Map Markdown heading levels to Trilium-compatible levels starting at H2."""
+    return min(level + 1, 6)
+
+
 def shift_markdown_headings(text: str) -> str:
     """Shift Markdown headings down one level because Trilium does not support H1."""
     shifted_lines: list[str] = []
     fence_char: str | None = None
     fence_length = 0
+    lines = text.splitlines(keepends=True)
+    index = 0
 
-    for line in text.splitlines(keepends=True):
+    while index < len(lines):
+        line = lines[index]
         fence = FENCE_RE.match(line)
         if fence:
             marker = fence.group(1)
@@ -92,14 +101,31 @@ def shift_markdown_headings(text: str) -> str:
             elif marker[0] == fence_char and len(marker) >= fence_length:
                 fence_char, fence_length = None, 0
             shifted_lines.append(line)
+            index += 1
             continue
 
         if fence_char is None:
             heading = ATX_HEADING_RE.match(line)
             if heading:
-                level = min(len(heading.group(2)) + 1, 6)
-                line = f"{heading.group(1)}{'#' * level}{line[heading.end():]}"
+                level = len(heading.group(2))
+                replacement_level = shift_heading_level(level)
+                remainder = line[heading.end():]
+                shifted_lines.append(f"{heading.group(1)}{'#' * replacement_level}{remainder}")
+                index += 1
+                continue
+
+            setext_match = SETEXT_HEADING_RE.match("".join(lines[index : index + 2]))
+            if setext_match:
+                title = setext_match.group("title").rstrip()
+                underline = setext_match.group("underline")
+                level = 1 if underline.startswith("=") else 2
+                replacement_level = shift_heading_level(level)
+                shifted_lines.append(f"{'#' * replacement_level} {title.rstrip()}\n")
+                index += 2
+                continue
+
         shifted_lines.append(line)
+        index += 1
 
     return "".join(shifted_lines)
 
