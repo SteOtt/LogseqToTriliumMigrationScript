@@ -204,6 +204,30 @@ def create_note_and_get_id(client: ETAPI, parent_note_id: str, title: str) -> st
     return response["note"]["noteId"]
 
 
+def upload_markdown_files(client: ETAPI, parent_note_id: str, staged_graph: Path) -> None:
+    """Upload Markdown files individually while preserving their directory hierarchy."""
+    path_note_ids: dict[tuple[str, ...], str] = {(): parent_note_id}
+    markdown_paths = sorted(
+        (path for path in staged_graph.rglob("*") if path.is_file() and path.suffix.lower() == ".md"),
+        key=lambda path: path.as_posix().casefold(),
+    )
+
+    for markdown_path in markdown_paths:
+        relative = markdown_path.relative_to(staged_graph)
+        parent_parts: tuple[str, ...] = ()
+        for part in relative.parts[:-1]:
+            current_parts = parent_parts + (part,)
+            if current_parts not in path_note_ids:
+                parent_id = path_note_ids[parent_parts]
+                note_id = find_child_note(client, parent_id, part)
+                if note_id is None:
+                    note_id = create_note_and_get_id(client, parent_id, part)
+                path_note_ids[current_parts] = note_id
+            parent_parts = current_parts
+
+        client.upload_md_file(file=str(markdown_path), parentNoteId=path_note_ids[parent_parts])
+
+
 def create_link_notes(client: ETAPI, parent_note_id: str, targets: list[str]) -> int:
     """Create missing linked notes, using slash-separated targets as note hierarchies."""
     created = 0
@@ -308,11 +332,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="logseq-trilium-") as staging_dir:
             staged_graph = Path(staging_dir)
             stage_markdown_files(files, graph, staged_graph)
-            client.upload_md_folder(
-                parentNoteId=args.parent_note_id,
-                mdFolder=str(staged_graph),
-                ignoreFolder=list(ignored_folders),
-            )
+            upload_markdown_files(client, args.parent_note_id, staged_graph)
         pages_note_id = find_child_note(client, args.parent_note_id, "pages")
         if pages_note_id is None:
             pages_note_id = create_note_and_get_id(client, args.parent_note_id, "pages")
