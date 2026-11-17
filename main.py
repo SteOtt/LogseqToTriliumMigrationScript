@@ -20,6 +20,7 @@ FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 INLINE_CODE_RE = re.compile(r"(`+)[^`\n]*?\1")
 ATX_HEADING_RE = re.compile(r"^( {0,3})(#{1,6})(?=[ \t]|$)")
 SETEXT_HEADING_RE = re.compile(r"^(?P<title>.+?)\n(?P<underline>=+|-+)[ \t]*$")
+LOGSEQ_LIST_HEADING_RE = re.compile(r"^(\s*(?:[-+*]|\d+[.)])[ \t]+)(#{1,6})(?=[ \t]|$)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,6 +106,16 @@ def shift_markdown_headings(text: str) -> str:
             continue
 
         if fence_char is None:
+            list_heading = LOGSEQ_LIST_HEADING_RE.match(line)
+            if list_heading:
+                indent = line[: len(line) - len(line.lstrip(" \t"))]
+                level = len(list_heading.group(2))
+                replacement_level = shift_heading_level(level)
+                remainder = line[list_heading.end(2):]
+                shifted_lines.append(f"{indent}{'#' * replacement_level}{remainder}")
+                index += 1
+                continue
+
             heading = ATX_HEADING_RE.match(line)
             if heading:
                 level = len(heading.group(2))
